@@ -12,7 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <cuda.h>
-
+#include <sys/time.h>
+#include <stddef.h>
 #include "util.h"
 
 __global__ void histo_prescan_kernel (
@@ -79,15 +80,15 @@ int main(int argc, char* argv[]) {
   char *mains = "MainKernel";
   char *finals = "FinalKernel";
 
-  pb_InitializeTimerSet(&timers);
+  //pb_InitializeTimerSet(&timers);
   
-  pb_AddSubTimer(&timers, prescans, pb_TimerID_KERNEL);
-  pb_AddSubTimer(&timers, postpremems, pb_TimerID_KERNEL);
-  pb_AddSubTimer(&timers, intermediates, pb_TimerID_KERNEL);
-  pb_AddSubTimer(&timers, mains, pb_TimerID_KERNEL);
-  pb_AddSubTimer(&timers, finals, pb_TimerID_KERNEL);
+  //pb_AddSubTimer(&timers, prescans, pb_TimerID_KERNEL);
+  //pb_AddSubTimer(&timers, postpremems, pb_TimerID_KERNEL);
+  //pb_AddSubTimer(&timers, intermediates, pb_TimerID_KERNEL);
+  //pb_AddSubTimer(&timers, mains, pb_TimerID_KERNEL);
+  //pb_AddSubTimer(&timers, finals, pb_TimerID_KERNEL);
   
-  pb_SwitchToTimer(&timers, pb_TimerID_IO);
+  //pb_SwitchToTimer(&timers, pb_TimerID_IO);
 
   int numIterations;
   if (argc >= 2){
@@ -107,6 +108,7 @@ int main(int argc, char* argv[]) {
   result += fread(&img_height,   sizeof(unsigned int), 1, f);
   result += fread(&histo_width,  sizeof(unsigned int), 1, f);
   result += fread(&histo_height, sizeof(unsigned int), 1, f);
+  fprintf(stderr, "img_width=%d img_height=%d\n", img_width, img_height);
 
   if (result != 4){
     fputs("Error reading input and output dimensions from file\n", stderr);
@@ -142,30 +144,37 @@ int main(int argc, char* argv[]) {
   cudaMalloc((void**)&global_overflow , img_width*histo_height*sizeof(unsigned int));
   cudaMalloc((void**)&final_histo     , img_width*histo_height*sizeof(unsigned char));
 
+
+  struct timeval curr_time;
+for (int iter = 0; iter < numIterations; iter++) {//Start of timestep loop
+
+  gettimeofday(&curr_time, NULL);
+  fprintf(stderr, "%d %ld\n", iter, curr_time.tv_sec*1000000 + curr_time.tv_usec);
+
   cudaMemset(final_histo , 0 , img_width*histo_height*sizeof(unsigned char));
 
   for (int y=0; y < img_height; y++){
     cudaMemcpy(&(((unsigned int*)input)[y*even_width]),&img[y*img_width],img_width*sizeof(unsigned int), cudaMemcpyHostToDevice);
   }
 
-  pb_SwitchToTimer(&timers, pb_TimerID_KERNEL);
+  //pb_SwitchToTimer(&timers, pb_TimerID_KERNEL);
 
-  for (int iter = 0; iter < numIterations; iter++) {
+  //for (int iter = 0; iter < numIterations; iter++) {
     unsigned int ranges_h[2] = {UINT32_MAX, 0};
 
     cudaMemcpy(ranges,ranges_h, 2*sizeof(unsigned int), cudaMemcpyHostToDevice);
     
-    pb_SwitchToSubTimer(&timers, prescans , pb_TimerID_KERNEL);
+    //pb_SwitchToSubTimer(&timers, prescans , pb_TimerID_KERNEL);
 
     histo_prescan_kernel<<<dim3(PRESCAN_BLOCKS_X),dim3(PRESCAN_THREADS)>>>((unsigned int*)input, img_height*img_width, ranges);
     
-    pb_SwitchToSubTimer(&timers, postpremems , pb_TimerID_KERNEL);
+    //pb_SwitchToSubTimer(&timers, postpremems , pb_TimerID_KERNEL);
 
     cudaMemcpy(ranges_h,ranges, 2*sizeof(unsigned int), cudaMemcpyDeviceToHost);
 
     cudaMemset(global_subhisto,0,img_width*histo_height*sizeof(unsigned int));
     
-    pb_SwitchToSubTimer(&timers, intermediates, pb_TimerID_KERNEL);
+    //pb_SwitchToSubTimer(&timers, intermediates, pb_TimerID_KERNEL);
 
     histo_intermediates_kernel<<<dim3((img_height + UNROLL-1)/UNROLL), dim3((img_width+1)/2)>>>(
                 (uint2*)(input),
@@ -175,7 +184,7 @@ int main(int argc, char* argv[]) {
                 (uchar4*)(sm_mappings)
     );
     
-    pb_SwitchToSubTimer(&timers, mains, pb_TimerID_KERNEL);
+    //pb_SwitchToSubTimer(&timers, mains, pb_TimerID_KERNEL);
     
     
     histo_main_kernel<<<dim3(BLOCK_X, ranges_h[1]-ranges_h[0]+1), dim3(THREADS)>>>(
@@ -188,7 +197,7 @@ int main(int argc, char* argv[]) {
                 (unsigned int*)(global_overflow)    
     );
     
-    pb_SwitchToSubTimer(&timers, finals, pb_TimerID_KERNEL);
+    //pb_SwitchToSubTimer(&timers, finals, pb_TimerID_KERNEL);
     
     histo_final_kernel<<<dim3(BLOCK_X*3), dim3(512)>>>(
                 ranges_h[0], ranges_h[1],
@@ -198,10 +207,14 @@ int main(int argc, char* argv[]) {
                 (unsigned int*)(global_overflow),
                 (unsigned int*)(final_histo)
     );
-  }
-  pb_SwitchToTimer(&timers, pb_TimerID_IO);
+  //}
+  //pb_SwitchToTimer(&timers, pb_TimerID_IO);
 
   cudaMemcpy(histo,final_histo, histo_height*histo_width*sizeof(unsigned char), cudaMemcpyDeviceToHost);
+} //End of timestep loop
+
+  gettimeofday(&curr_time, NULL);
+  fprintf(stderr, "END %ld\n", curr_time.tv_sec*1000000 + curr_time.tv_usec);
 
   cudaFree(input);
   cudaFree(ranges);
@@ -215,18 +228,18 @@ int main(int argc, char* argv[]) {
     dump_histo_img(histo, histo_height, histo_width, parameters->outFile);
   }
 
-  pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
+  //pb_SwitchToTimer(&timers, pb_TimerID_COMPUTE);
 
   free(img);
   free(histo);
 
-  pb_SwitchToTimer(&timers, pb_TimerID_NONE);
+  //pb_SwitchToTimer(&timers, pb_TimerID_NONE);
 
   printf("\n");
-  pb_PrintTimerSet(&timers);
+  //pb_PrintTimerSet(&timers);
   pb_FreeParameters(parameters);
   
-  pb_DestroyTimerSet(&timers);
+  //pb_DestroyTimerSet(&timers);
 
   return 0;
 }
